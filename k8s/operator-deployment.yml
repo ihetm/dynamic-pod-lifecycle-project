@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: session-operator
+  namespace: session-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: session-operator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]
+
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "delete", "patch", "update"]
+
+  # Kopf needs this to create/patch K8s events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: session-operator-binding
+roleRef:
+  kind: ClusterRole
+  name: session-operator-role
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+  - kind: ServiceAccount
+    name: session-operator
+    namespace: session-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-operator
+  namespace: session-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: session-operator
+  template:
+    metadata:
+      labels:
+        app: session-operator
+    spec:
+      serviceAccountName: session-operator
+      containers:
+        - name: operator
+          image: 766330623591.dkr.ecr.ap-northeast-1.amazonaws.com/operator:v1
+          imagePullPolicy: Always
+          command: ["kopf", "run", "--standalone", "/app/session_operator.py"]
+          env:
+            - name: APP_REDIS_HOST
+              value: "redis.session-system.svc.cluster.local"
+            - name: APP_REDIS_PORT
+              value: "6379"
+            - name: IDLE_TIMEOUT
+              value: "600"
+            - name: WORKER_IMAGE
+              value: "766330623591.dkr.ecr.ap-northeast-1.amazonaws.com/worker:v1"
+            - name: NAMESPACE
+              value: "session-system"
+          ports:
+            - containerPort: 8085
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8085
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-operator
+  namespace: session-system
+spec:
+  selector:
+    app: session-operator
+  ports:
+    - port: 8085
+      targetPort: 8085
+  type: ClusterIP

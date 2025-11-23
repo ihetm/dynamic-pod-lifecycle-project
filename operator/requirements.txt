@@ -1,0 +1,7 @@
+kopf==1.36.2
+kubernetes==26.1.0
+redis==5.0.1
+flask==3.0.0
+gunicorn==21.2.0
+fastapi==0.95.2
+uvicorn==0.22.0

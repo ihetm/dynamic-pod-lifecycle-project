@@ -1,0 +1,85 @@
+name: Build & Deploy Dynamic Pods
+
+on:
+  push:
+    paths:
+      - "**/*.py"
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-northeast-1
+      ACCOUNT_ID: 766330623591
+      COMPONENTS: "api router session-operator worker"
+      K8S_DIR: k8s
+
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    # ---------------------------
+    # Get next version tag
+    # ---------------------------
+    - name: Get Latest Tag
+      id: get_tag
+      run: |
+        TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "Latest Tag: $TAG"
+        echo "tag=$TAG" >> $GITHUB_ENV
+
+    - name: Calculate Next Tag
+      id: next_tag
+      run: |
+        LAST=${tag#v}
+        MAJOR=$(echo $LAST | cut -d. -f1)
+        MINOR=$(echo $LAST | cut -d. -f2)
+        PATCH=$(echo $LAST | cut -d. -f3)
+        NEW_TAG=v$MAJOR.$MINOR.$((PATCH+1))
+        echo "Next Tag: $NEW_TAG"
+        echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
+
+    # ---------------------------
+    # Authenticate to AWS + ECR
+    # ---------------------------
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::766330623591:role/github-actions
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+    # ---------------------------
+    # Build & Push Images
+    # ---------------------------
+    - name: Build & Push Component Images
+      run: |
+        for comp in $COMPONENTS; do
+          echo "Building $comp..."
+          docker build -t $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$comp:$NEW_TAG $comp
+          docker push $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$comp:$NEW_TAG
+        done
+
+    # ---------------------------
+    # Update image tags in k8s manifests
+    # ---------------------------
+    - name: Update Deployment Tags
+      run: |
+        sed -i "s|\(.*dkr.ecr.*:\).*|\1$NEW_TAG|g" $K8S_DIR/*.yaml
+
+    # ---------------------------
+    # Commit and push changes
+    # ---------------------------
+    - name: Commit Updated Files
+      run: |
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+        git add $K8S_DIR
+        git commit -m "Update deployments to $NEW_TAG" || echo "No changes to commit"
+        git tag $NEW_TAG
+        git push origin $NEW_TAG
+        git push
